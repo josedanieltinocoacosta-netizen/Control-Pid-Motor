@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Gemelo Digital Motor - PID vs PWM</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #121212; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: white; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        
+        .panel {
+            position: absolute; background: rgba(20, 20, 25, 0.75); backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 20px; z-index: 2;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+        }
+        #control-panel { top: 20px; left: 20px; width: 340px; }
+        #charts-container { bottom: 20px; right: 20px; width: 500px; display: flex; flex-direction: column; gap: 15px; }
+        .chart-box { height: 200px; width: 100%; position: relative; }
+        
+        h2 { margin-top: 0; font-size: 18px; color: #00e5ff; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
+        h3 { margin: 0 0 10px 0; font-size: 14px; color: #aaa; font-weight: normal; text-align: center;}
+        
+        .control-group { margin-bottom: 15px; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px;}
+        .control-group label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px; color: #ccc; font-weight: bold;}
+        input[type=range] { width: 100%; accent-color: #00e5ff; cursor: pointer; }
+        
+        /* Botones de Acción */
+        .btn-group { display: flex; gap: 10px; margin-top: 15px; }
+        .action-btn { flex: 1; padding: 10px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s; font-size: 12px; }
+        .btn-confirm { background-color: #00e5ff; color: #000; box-shadow: 0 0 10px rgba(0,229,255,0.3); }
+        .btn-confirm:hover { background-color: #00b3cc; }
+        .btn-default { background-color: #444; color: #fff; border: 1px solid #666; }
+        .btn-default:hover { background-color: #555; }
+
+        /* Contenedor de las métricas numéricas */
+        .stats { font-family: monospace; font-size: 14px; margin-top: 15px; color: #fff; line-height: 1.8; background: rgba(0,0,0,0.4); padding: 15px; border-radius: 8px; border-left: 4px solid #00e5ff;}
+        .stats span { color: #00e5ff; font-weight: bold; float: right;}
+        
+        .status-dot { display: inline-block; width: 10px; height: 10px; background-color: red; border-radius: 50%; margin-right: 8px; }
+        .status-dot.connected { background-color: #00e5ff; box-shadow: 0 0 10px #00e5ff; }
+        
+        /* Selector de Modos */
+        .header-controls { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 15px; margin-bottom: 15px; }
+        select { background: #333; color: white; border: 1px solid #00e5ff; padding: 8px; border-radius: 6px; cursor: pointer; font-weight: bold; outline: none;}
+        select:focus { box-shadow: 0 0 8px rgba(0,229,255,0.5); }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+    <div id="control-panel" class="panel">
+        <h2>Dashboard Motor</h2>
+        <div style="margin-bottom: 10px; font-size: 12px; color: #aaa;">
+            <span id="conn-dot" class="status-dot"></span><span id="conn-text">Buscando ESP32-S3...</span>
+        </div>
+        
+        <!-- Selector de Modos -->
+        <div class="header-controls">
+            <span style="font-size: 14px; font-weight: bold;">Modo de Control</span>
+            <select id="mode-select">
+                <option value="pid">Lazo Cerrado (PID)</option>
+                <option value="pwm">Lazo Abierto (PWM)</option>
+            </select>
+        </div>
+
+        <!-- SECCIÓN PID (Se oculta en modo PWM) -->
+        <div id="pid-controls">
+            <div class="control-group" style="border-left: 3px solid #ff0055;">
+                <label><span>Target Objetivo (RPM)</span> <span id="val-ref">45</span></label>
+                <input type="range" id="ref" min="0" max="250" step="1" value="45">
+            </div>
+            <div class="control-group">
+                <label><span>Proporcional (Kp)</span> <span id="val-kp">0.50</span></label>
+                <input type="range" id="kp" min="0" max="3.0" step="0.05" value="0.50">
+            </div>
+            <div class="control-group">
+                <label><span>Integral (Ki)</span> <span id="val-ki">0.20</span></label>
+                <input type="range" id="ki" min="0" max="1.0" step="0.01" value="0.20">
+            </div>
+            <div class="control-group">
+                <label><span>Derivativo (Kd)</span> <span id="val-kd">0.020</span></label>
+                <input type="range" id="kd" min="0" max="0.1" step="0.005" value="0.020">
+            </div>
+        </div>
+
+        <!-- SECCIÓN PWM (Se oculta en modo PID) -->
+        <div id="pwm-controls" style="display: none;">
+            <div class="control-group" style="border-left: 3px solid #00e5ff;">
+                <label><span>Potencia Directa (PWM)</span> <span id="val-pwm">0</span></label>
+                <input type="range" id="pwm-slider" min="0" max="1023" step="1" value="0">
+            </div>
+            <p style="font-size: 11px; color: #888; text-align: center;">El algoritmo PID está desactivado. El motor recibe el voltaje directamente.</p>
+        </div>
+        
+        <!-- Botones de Acción -->
+        <div class="btn-group">
+            <button id="btn-confirm" class="action-btn btn-confirm">APLICAR CAMBIOS</button>
+            <button id="btn-default" class="action-btn btn-default">DEFAULT</button>
+        </div>
+
+        <!-- Métricas en tiempo real -->
+        <div class="stats" id="stats-display">
+            RPM Reales: <span>0.0</span><br>
+            PWM Inyectado: <span>0</span><br>
+            Voltaje Estimado: <span>0.00 V</span><br>
+            Error Actual: <span style="color:#ff0055">0.0</span>
+        </div>
+    </div>
+
+    <!-- Panel de Gráficas -->
+    <div id="charts-container" class="panel">
+        <div class="chart-box">
+            <h3>Comportamiento en el Tiempo (RPM)</h3>
+            <canvas id="pidChart"></canvas>
+        </div>
+        <div class="chart-box">
+            <h3>Lógica Difusa (Fuzzy Logic)</h3>
+            <canvas id="fuzzyChart"></canvas>
+        </div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <script>
+        // ==========================================================
+        // 1. GESTIÓN DE CONEXIÓN Y ESTADOS
+        // ==========================================================
+        const ESP32_IP = "http://192.168.1.4"; // Revisa que esta sea la IP correcta
+        
+        // Valores por defecto
+        const DEF_TARGET = 45;
+        const DEF_KP = 0.50;
+        const DEF_KI = 0.20;
+        const DEF_KD = 0.02;
+        const DEF_PWM = 0;
+
+        let estado = { target: 0, rpm_reales: 0, error: 0, pwm: 0 };
+        let conectado = false;
+        let modoActual = 'pid';
+
+        // Gestión del cambio de modo UI
+        const modeSelect = document.getElementById('mode-select');
+        const pidControls = document.getElementById('pid-controls');
+        const pwmControls = document.getElementById('pwm-controls');
+
+        modeSelect.addEventListener('change', (e) => {
+            modoActual = e.target.value;
+            if (modoActual === 'pid') {
+                pidControls.style.display = 'block';
+                pwmControls.style.display = 'none';
+            } else {
+                pidControls.style.display = 'none';
+                pwmControls.style.display = 'block';
+            }
+            enviarComandos(); // Al cambiar de modo sí enviamos la orden de inmediato
+        });
+
+        // Solo actualizamos el texto al mover los controles, NO enviamos datos al ESP32
+        const slidersPID = ['ref', 'kp', 'ki', 'kd'];
+        slidersPID.forEach(id => {
+            document.getElementById(id).addEventListener('input', actualizarTextosSliders);
+        });
+
+        document.getElementById('pwm-slider').addEventListener('input', () => {
+            document.getElementById('val-pwm').innerText = document.getElementById('pwm-slider').value;
+        });
+
+        function actualizarTextosSliders() {
+            document.getElementById('val-ref').innerText = document.getElementById('ref').value;
+            document.getElementById('val-kp').innerText = parseFloat(document.getElementById('kp').value).toFixed(2);
+            document.getElementById('val-ki').innerText = parseFloat(document.getElementById('ki').value).toFixed(2);
+            document.getElementById('val-kd').innerText = parseFloat(document.getElementById('kd').value).toFixed(3);
+        }
+
+        // ==========================================================
+        // LÓGICA DE LOS NUEVOS BOTONES
+        // ==========================================================
+        
+        // Botón Confirmar
+        const btnConfirm = document.getElementById('btn-confirm');
+        btnConfirm.addEventListener('click', () => {
+            enviarComandos();
+            
+            // Pequeño efecto visual para confirmar que se presionó
+            btnConfirm.innerText = "¡ENVIADO!";
+            btnConfirm.style.backgroundColor = "#ffea00"; 
+            setTimeout(() => {
+                btnConfirm.innerText = "APLICAR CAMBIOS";
+                btnConfirm.style.backgroundColor = "#00e5ff";
+            }, 600);
+        });
+
+        // Botón Default
+        document.getElementById('btn-default').addEventListener('click', () => {
+            // Restaurar los valores en los sliders
+            document.getElementById('ref').value = DEF_TARGET;
+            document.getElementById('kp').value = DEF_KP;
+            document.getElementById('ki').value = DEF_KI;
+            document.getElementById('kd').value = DEF_KD;
+            document.getElementById('pwm-slider').value = DEF_PWM;
+            
+            // Actualizar los textos
+            actualizarTextosSliders();
+            document.getElementById('val-pwm').innerText = DEF_PWM;
+            
+            // Enviar la orden de reseteo al ESP32
+            enviarComandos();
+        });
+
+        // ==========================================================
+        // ENVÍO DE DATOS
+        // ==========================================================
+        function enviarComandos() {
+            let url = "";
+            if (modoActual === 'pid') {
+                let t = document.getElementById('ref').value;
+                let p = document.getElementById('kp').value;
+                let i = document.getElementById('ki').value;
+                let d = document.getElementById('kd').value;
+                url = `${ESP32_IP}/?modo=pid&target=${t}&kp=${p}&ki=${i}&kd=${d}`;
+            } else {
+                let pwm = document.getElementById('pwm-slider').value;
+                url = `${ESP32_IP}/?modo=pwm&pwm=${pwm}`;
+            }
+            fetch(url).catch(e => console.log("Esperando conexión..."));
+        }
+
+        // Petición de telemetría constante (Lectura cada 100ms)
+        async function obtenerTelemetria() {
+            try {
+                let respuesta = await fetch(ESP32_IP);
+                if (respuesta.ok) {
+                    estado = await respuesta.json();
+                    if(!conectado) {
+                        conectado = true;
+                        document.getElementById('conn-dot').classList.add('connected');
+                        document.getElementById('conn-text').innerText = "Online";
+                    }
+                }
+            } catch (err) {
+                conectado = false;
+                document.getElementById('conn-dot').classList.remove('connected');
+                document.getElementById('conn-text').innerText = "Offline";
+            }
+        }
+        setInterval(obtenerTelemetria, 100);
+
+        // ==========================================================
+        // 2. CONFIGURACIÓN 3D (Three.js)
+        // ==========================================================
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x121212, 0.03);
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 5, 12);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true; controls.target.set(0, 2, 0);
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(5, 10, 5); scene.add(dirLight);
+        const cyanLight = new THREE.PointLight(0x00e5ff, 2, 10);
+        cyanLight.position.set(0, -2, 0); scene.add(cyanLight);
+
+        const matCarcasa = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.4, metalness: 0.8 });
+        const matEje = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.1, metalness: 1.0 });
+        const matAspaCyan = new THREE.MeshStandardMaterial({ color: 0x00e5ff, roughness: 0.2, metalness: 0.1 });
+        const matAspaMagenta = new THREE.MeshStandardMaterial({ color: 0xff0055, roughness: 0.2, metalness: 0.1 });
+
+        const carcasa = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 3, 32), matCarcasa);
+        carcasa.position.y = 1.5; scene.add(carcasa);
+        const rotorGroup = new THREE.Group(); rotorGroup.position.y = 3; scene.add(rotorGroup);
+        const eje = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 1.5, 16), matEje);
+        eje.position.y = 0.5; rotorGroup.add(eje);
+
+        const geoAspa = new THREE.BoxGeometry(2.5, 0.1, 0.4); geoAspa.translate(1.25, 0, 0); 
+        for(let i=0; i<4; i++) {
+            let material = (i % 2 === 0) ? matAspaCyan : matAspaMagenta;
+            let aspa = new THREE.Mesh(geoAspa, material);
+            aspa.rotation.y = (Math.PI / 2) * i; aspa.position.y = 1.0; rotorGroup.add(aspa);
+        }
+        scene.add(new THREE.GridHelper(20, 20, 0x444444, 0x222222));
+
+        // ==========================================================
+        // 3. GRÁFICAS (Chart.js)
+        // ==========================================================
+        Chart.defaults.color = '#aaa';
+        Chart.defaults.font.family = 'Segoe UI';
+
+        const ctxPID = document.getElementById('pidChart').getContext('2d');
+        const pidChart = new Chart(ctxPID, {
+            type: 'line',
+            data: {
+                labels: Array(100).fill(''),
+                datasets: [
+                    { label: 'RPM Reales', borderColor: '#00e5ff', data: Array(100).fill(0), borderWidth: 2, pointRadius: 0, tension: 0.1 },
+                    { label: 'Target', borderColor: '#ff0055', data: Array(100).fill(0), borderWidth: 2, borderDash: [5, 5], pointRadius: 0 }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                scales: { y: { min: 0, max: 250, grid: { color: 'rgba(255,255,255,0.1)' } }, x: { grid: { display: false } } },
+                plugins: { legend: { display: false } }
+            }
+        });
+
+        const ctxFuzzy = document.getElementById('fuzzyChart').getContext('2d');
+        const fuzzyChart = new Chart(ctxFuzzy, {
+            type: 'scatter',
+            data: {
+                datasets: [
+                    { label: 'NG', borderColor: '#ff0055', backgroundColor: 'rgba(255,0,85,0.1)', data: [{x: -100, y: 1}, {x: -25, y: 1}, {x: 0, y: 0}, {x: 100, y: 0}], showLine: true, fill: true, tension: 0, pointRadius: 0, borderWidth: 2 },
+                    { label: 'Z', borderColor: '#00e5ff', backgroundColor: 'rgba(0,229,255,0.1)', data: [{x: -100, y: 0}, {x: -25, y: 0}, {x: 0, y: 1}, {x: 25, y: 0}, {x: 100, y: 0}], showLine: true, fill: true, tension: 0, pointRadius: 0, borderWidth: 2 },
+                    { label: 'PG', borderColor: '#ffea00', backgroundColor: 'rgba(255,234,0,0.1)', data: [{x: -100, y: 0}, {x: 0, y: 0}, {x: 25, y: 1}, {x: 100, y: 1}], showLine: true, fill: true, tension: 0, pointRadius: 0, borderWidth: 2 },
+                    { label: 'Error Actual', borderColor: '#ffffff', data: [{x: 0, y: 0}, {x: 0, y: 1.1}], showLine: true, fill: false, tension: 0, borderDash: [4, 4], borderWidth: 2, pointBackgroundColor: '#ffffff', pointRadius: [0, 5] }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                scales: { y: { min: 0, max: 1.1, title: { display: true, text: 'μ(x)' }, grid: { color: 'rgba(255,255,255,0.1)' } }, x: { min: -100, max: 100, title: { display: true, text: 'Error e(t)' }, grid: { color: 'rgba(255,255,255,0.1)' } } },
+                plugins: { legend: { labels: { boxWidth: 12 } } }
+            }
+        });
+
+        // ==========================================================
+        // 4. BUCLE DE ACTUALIZACIÓN VISUAL
+        // ==========================================================
+        let frameCount = 0;
+        const clock = new THREE.Clock();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            let dt = clock.getDelta(); 
+            
+            let velocidad_angular = estado.rpm_reales * (2 * Math.PI / 60);
+            rotorGroup.rotation.y += velocidad_angular * dt; 
+
+            let voltaje_estimado = (estado.pwm / 1023) * 9.0;
+
+            // Actualizar métricas
+            document.getElementById('stats-display').innerHTML = `
+                RPM Reales: <span>${estado.rpm_reales.toFixed(1)}</span><br>
+                PWM Inyectado: <span>${estado.pwm.toFixed(0)}</span><br>
+                Voltaje Estimado: <span>${voltaje_estimado.toFixed(2)} V</span><br>
+                Error Actual: <span style="color:#ff0055">${estado.error.toFixed(1)}</span>
+            `;
+
+            // Actualizar gráficas cada 3 frames para rendimiento
+            frameCount++;
+            if(frameCount % 3 === 0) {
+                pidChart.data.datasets[0].data.shift();
+                pidChart.data.datasets[0].data.push(estado.rpm_reales);
+                pidChart.data.datasets[1].data.shift();
+                pidChart.data.datasets[1].data.push(estado.target || 0);
+                pidChart.update();
+
+                fuzzyChart.data.datasets[3].data[0].x = estado.error;
+                fuzzyChart.data.datasets[3].data[1].x = estado.error;
+                fuzzyChart.update();
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
